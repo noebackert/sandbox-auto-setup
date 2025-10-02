@@ -26,7 +26,24 @@ def toggle_tool(config: json, tool_name: str) -> json:
     if tool_name in config.get('tools', {}):
         current_state = config['tools'][tool_name].get('enable', False)
         config['tools'][tool_name]['enable'] = not current_state
-        print(f"[+] Toggled {tool_name} to {'enabled' if not current_state else 'disabled'}.")
+        
+        if not current_state:  # If we're enabling the tool
+            print(f"[+] Enabled {tool_name}.")
+            # Check and enable dependencies
+            config = check_and_enable_dependencies(config, tool_name)
+        else:  # If we're disabling the tool
+            print(f"[+] Disabled {tool_name}.")
+            # Check if any other enabled tools depend on this one
+            tools = config.get('tools', {})
+            dependent_tools = []
+            for other_tool, other_info in tools.items():
+                if other_info.get('enable', False) and tool_name in other_info.get('dependencies', []):
+                    dependent_tools.append(other_tool)
+            
+            if dependent_tools:
+                print(f"[!] Warning: The following tools depend on {tool_name}: {', '.join(dependent_tools)}")
+                print(f"[!] Consider disabling these tools first or they may not work properly.")
+        
         save_config(config)
     else:
         print(f"[-] Tool {tool_name} not found in configuration.")
@@ -38,9 +55,18 @@ def get_missing_setup_files(config: json) -> list:
     missing_files = []
     for tool_name, tool_info in config.get('tools', {}).items():
         if tool_info.get('enable', False):
-            file_path = os.path.join(os.path.dirname(__file__), 'scripts', 'setups', tool_info['name'])
+            # Skip tools that don't require file downloads (like pip installs)
+            tool_name_value = tool_info.get('name', '')
+            if not tool_name_value or tool_name_value.lower() in ['none', '']:
+                print(f"[*] Skipping {tool_name} - no file download required")
+                continue
+                
+            file_path = os.path.join(os.path.dirname(__file__), 'scripts', 'setups', tool_name_value)
             if not os.path.exists(file_path):
+                print(f"[*] Missing: {tool_name_value}")
                 missing_files.append(tool_info)
+            else:
+                print(f"[*] Found: {tool_name_value}")
     return missing_files
 
 def download_7zip():
@@ -61,21 +87,40 @@ def download_missing_setup_files(config: json):
     """Download setup files that are missing."""
     file_path = os.path.join(os.path.dirname(__file__), 'scripts', 'setups')
     os.makedirs(file_path, exist_ok=True)
-    # If 7zip is not installed, download it
+    
     tools_to_download = get_missing_setup_files(config)
+    
+    if not tools_to_download:
+        print("[+] No files need to be downloaded.")
+        return
 
+    print(f"[*] Need to download {len(tools_to_download)} files...")
+    
     for tool_info in tools_to_download:
-        destination = os.path.join(file_path, tool_info['name'])
+        tool_name = tool_info.get('name', '')
+        tool_link = tool_info.get('link', '')
+        
+        # Double-check we have valid download info
+        if not tool_name or not tool_link or tool_name.lower() in ['none', '']:
+            print(f"[-] Skipping invalid tool: {tool_info}")
+            continue
+            
+        destination = os.path.join(file_path, tool_name)
+        
         try:
-            print(f"[*] Downloading {tool_info['name']}...")
-            response = requests.get(tool_info['link'], stream=True, allow_redirects=True, timeout=30)
+            print(f"[*] Downloading {tool_name}...")
+            response = requests.get(tool_link, stream=True, allow_redirects=True, timeout=30)
             response.raise_for_status()
+            
             with open(destination, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-            print(f"[+] {tool_info['name']} downloaded successfully.")
+            print(f"[+] {tool_name} downloaded successfully")
+            
         except requests.RequestException as e:
-            print(f"[-] Failed to download {tool_info['name']}: {e}")
+            print(f"[-] Failed to download {tool_name}: {e}")
+        except Exception as e:
+            print(f"[-] Error downloading {tool_name}: {e}")
 
 def generate_wsb_config(config: dict) -> str:
     """Generate a WSB configuration string based on the provided vmConfig section."""
@@ -165,7 +210,9 @@ def tool_config():
         print("\nAvailable Tools:")
         for index, (tool_name, tool_info) in enumerate(config.get('tools', {}).items(), start=1):
             status = "Enabled" if tool_info.get('enable', False) else "Disabled"
-            print(f"{index}. [{'X' if status == 'Enabled' else ' '}] - {tool_name} (Version: {tool_info.get('version', 'N/A')})")
+            deps = tool_info.get('dependencies', [])
+            deps_str = f" (Deps: {', '.join(deps)})" if deps else ""
+            print(f"{index}. [{'X' if status == 'Enabled' else ' '}] - {tool_name} (v{tool_info.get('version', 'N/A')}){deps_str}")
 
         choice = input("\nEnter the number of the tool to toggle, or 'done' to finish: ").strip()
         if choice.lower() == 'done':
@@ -219,7 +266,8 @@ def sandbox_config():
                     for i, folder in enumerate(mapped, 1):
                         print(f"{i}. Host: {folder['HostFolder']}, Sandbox: {folder.get('SandboxFolder', '')}, ReadOnly: {folder.get('ReadOnly', True)}")
                     try:
-                        index = input("Enter the number to remove (or 'none' to cancel): ").strip().lower()
+                        index = input("Enter the number to remove (or 'none' to cancel): ")
+
                         if index != 'none':
                             idx = int(index) - 1
                             if 0 <= idx < len(mapped):
@@ -280,6 +328,14 @@ def configure_sandbox():
             if not os.path.exists(os.path.join(file_path, '7z2409-x64.msi')):
                 download_7zip()
 
+            print("[*] Checking for missing setup files...")
+            missing_files = get_missing_setup_files(config)
+            if missing_files:
+                print(f"[*] Downloading {len(missing_files)} missing files...")
+                download_missing_setup_files(config)
+            else:
+                print("[+] All required setup files are present.")
+
             print("[*] Generating WSB configuration file...")
             generate_wsb_config(config)
             print("[+] WSB configuration file generated successfully.")
@@ -301,10 +357,18 @@ def generate_setup_cmd(config: json):
     ]
     lines.append(f'msiexec /i "%TEMP%\\7z2409-x64.msi" /qn /norestart')
 
-    for name, tool in tools.items():
-        if not tool.get("enable", False):
-            continue
+    # Get enabled tools and sort by dependencies
+    enabled_tools = [(name, tool) for name, tool in tools.items() if tool.get("enable", False)]
+    
+    # Sort tools so dependencies are installed first
+    def dependency_sort_key(tool_item):
+        name, tool = tool_item
+        deps = tool.get('dependencies', [])
+        return len(deps)  # Tools with fewer dependencies first
+    
+    enabled_tools.sort(key=dependency_sort_key)
 
+    for name, tool in enabled_tools:
         filename = tool.get("name", "").lower()
         lines.append(f'echo [*] Installing {name}...')
 
@@ -344,8 +408,26 @@ def generate_setup_cmd(config: json):
             if "vscode" in filename:
                 lines.append(f'"%TEMP%\\{filename}" /verysilent /suppressmsgboxes /MERGETASKS="!runcode,addtopath"')
 
+            if "dotnet-sdk" in filename:
+                lines += [
+                    f'"%TEMP%\\{filename}" /quiet /norestart',
+                    'echo "[*] .NET SDK installed successfully"',
+                    'echo "[*] Adding .NET to PATH..."',
+                    'set "PATH=%PATH%;C:\\Program Files\\dotnet\\"'
+                ]
+
             if "sysinternals" in filename:
                 lines.append(f'"%PROGRAMFILES%\\7-Zip\\7z.exe" x -aoa "%TEMP%\\{filename}" -o"%USERPROFILE%\\Desktop\\Tools\\sysinternals"')
+
+            if "zimmermantools" in filename or "get-zimmermantools" in filename:
+                lines += [
+                    'if not exist "%USERPROFILE%\\Desktop\\Tools\\ZimmermanTools" mkdir "%USERPROFILE%\\Desktop\\Tools\\ZimmermanTools"',
+                    f'"%PROGRAMFILES%\\7-Zip\\7z.exe" x -aoa "%TEMP%\\{filename}" -o"%USERPROFILE%\\Desktop\\Tools\\ZimmermanTools"',
+                    'echo "[*] Eric Zimmerman Tools extracted to Desktop\\Tools\\ZimmermanTools"',
+                    'cd /d "%USERPROFILE%\\Desktop\\Tools\\ZimmermanTools"',
+                    'powershell.exe -ExecutionPolicy Bypass -File "Get-ZimmermanTools.ps1" -Dest "%USERPROFILE%\\Desktop\\Tools\\ZimmermanTools\\EZTools"',
+                    'echo "[*] Eric Zimmerman Tools downloaded and installed successfully"'
+                ]
 
         except Exception as e:
             lines.append(f'echo [!] Unknown install method for: {filename}')
@@ -368,6 +450,57 @@ def generate_setup_cmd(config: json):
         f.write("\n".join(lines))
 
     print(f"[+] setup.cmd generated with {sum(tool['enable'] for tool in tools.values())} tools.")
+
+def check_and_enable_dependencies(config: json, tool_name: str) -> json:
+    """Check and automatically enable dependencies for a tool."""
+    tools = config.get('tools', {})
+    tool_info = tools.get(tool_name, {})
+    dependencies = tool_info.get('dependencies', [])
+    
+    if not dependencies:
+        return config
+    
+    print(f"[*] Checking dependencies for {tool_name}...")
+    dependencies_enabled = []
+    
+    for dep in dependencies:
+        if dep in tools:
+            if not tools[dep].get('enable', False):
+                tools[dep]['enable'] = True
+                dependencies_enabled.append(dep)
+                print(f"[+] Auto-enabled dependency: {dep}")
+            else:
+                print(f"[*] Dependency already enabled: {dep}")
+        else:
+            print(f"[-] Warning: Dependency '{dep}' not found in available tools")
+    
+    if dependencies_enabled:
+        save_config(config)
+        print(f"[+] Enabled {len(dependencies_enabled)} dependencies for {tool_name}")
+    
+    return config
+
+def get_all_dependencies(config: json, tool_name: str, visited=None) -> list:
+    """Get all dependencies for a tool recursively to avoid circular dependencies."""
+    if visited is None:
+        visited = set()
+    
+    if tool_name in visited:
+        return []  # Circular dependency detected
+    
+    visited.add(tool_name)
+    tools = config.get('tools', {})
+    tool_info = tools.get(tool_name, {})
+    dependencies = tool_info.get('dependencies', [])
+    
+    all_deps = []
+    for dep in dependencies:
+        all_deps.append(dep)
+        # Recursively get dependencies of dependencies
+        sub_deps = get_all_dependencies(config, dep, visited.copy())
+        all_deps.extend(sub_deps)
+    
+    return list(set(all_deps))  # Remove duplicates
 
 
 if __name__ == "__main__":

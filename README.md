@@ -16,6 +16,7 @@ the following software is currently are currently available
 - JPEGView (for image view - no default jpg/png viewer in sandbox)
 - Git
 - Oletools
+- Eric Zimmerman Tools (digital forensics tools collection)
 
 
 #### Software to add:

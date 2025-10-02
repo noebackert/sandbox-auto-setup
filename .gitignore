@@ -1,4 +1,4 @@
 scripts/setups
 .venv
-config.json
+*.pyc
 WinSandbox.wsb
