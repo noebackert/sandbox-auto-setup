@@ -6,7 +6,7 @@ For configuration options in the `.wsb` file please read [https://docs.microsoft
 
 ## Software installed
 
-the following software is currently are currently available
+the following software are currently available
 
 - 7-zip (always)
 - Visual Studio Code
